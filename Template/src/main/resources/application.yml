@@ -1,0 +1,34 @@
+server:
+  port: 8088
+spring:
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+  servlet:
+    multipart: #配置文件上传文件大小
+      max-file-size: 2042MB  #单个数据大小
+      max-request-size: 2042MB #总数据大小
+  datasource:
+    dynamic:
+      primary: master  #默认会找master数据源
+      strict: false
+      datasource:
+        master:
+          driverClassName: com.mysql.cj.jdbc.Driver
+          url: jdbc:mysql://localhost:3306/dataflowdb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+          username: root
+          password: 123456
+          hikari:
+            minimum-idle: 3               # 最小空闲连接数
+            # 超时相关设置
+            idle-timeout: 600000           # 10分钟（空闲多久回收）
+            max-lifetime: 900000           # 15分钟（连接最长存活时间，要比 DB/防火墙超时小）
+            connection-timeout: 60000      # 获取连接最大等待时间（30秒）
+            validation-timeout: 5000       # 校验连接的超时时间（5秒）
+            maximum-pool-size: 50         # 最大连接数，根据业务并发量调整
+            leak-detection-threshold: 30000   # ← 顺便加上泄漏检测
+mybatis-plus:
+  mapper-locations: classpath:com/yin/mapper/xml/*/*.xml
+#  configuration:
+#    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+

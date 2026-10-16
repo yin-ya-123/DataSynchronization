@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.yin.mapper.jcxx.MenuMapper">
+    <select id="selectMenuByUserId" resultType="com.yin.pojo.jcxx.MenuPojo">
+        SELECT
+            DISTINCT
+            CD.ID,
+            CD.LABEL,
+            CD.ISCHILDREN,
+            CD.PATH,
+            CD.ICON,
+            CD.PARENTID,
+            CD.DELFLAG,
+            CD.MODULE_ID,
+            CD.MENU_LV,
+            CD.CREATE_TIME,
+            CD.CREATE_USER,
+            CD.UPDATE_TIME,
+            CD.UPDATE_USER,
+            CD.SORT
+        FROM
+            dataflowdb.DIC_USER U
+                INNER JOIN dataflowdb.DIC_USER_CHARGE GX ON U.ID=GX.USER_ID
+                INNER JOIN dataflowdb.sys_role_detail QXMX ON GX.ROLE_ID=QXMX.ROLE_ID
+                INNER JOIN dataflowdb.MENU CD ON QXMX.MENU_ID=CD.ID
+                INNER JOIN dataflowdb.SYS_MODULE MK ON CD.MODULE_ID=MK.MODULE_ID
+                AND CD.DELFLAG='0' and gx.del_flag='0' and qxmx.del_flag='0' AND CD.MENU_LV='1' AND U.ID=#{userId} AND MK.MODULE_ID = #{moduleId}
+        ORDER BY CD.SORT
+    </select>
+    <select id="selectMenuByParentId" resultType="com.yin.pojo.jcxx.MenuPojo">
+        SELECT DISTINCT CD.ID,
+                        CD.LABEL,
+                        CD.ISCHILDREN,
+                        CD.PATH,
+                        CD.ICON,
+                        CD.PARENTID,
+                        CD.DELFLAG,
+                        CD.MODULE_ID,
+                        CD.MENU_LV,
+                        CD.CREATE_TIME,
+                        CD.CREATE_USER,
+                        CD.UPDATE_TIME,
+                        CD.UPDATE_USER,
+                        CD.SORT
+        FROM dataflowdb.DIC_USER U
+                 INNER JOIN dataflowdb.DIC_USER_CHARGE GX ON U.ID = GX.USER_ID
+                 INNER JOIN dataflowdb.sys_role_detail QXMX ON GX.ROLE_ID = QXMX.ROLE_ID
+                 INNER JOIN dataflowdb.MENU CD ON QXMX.MENU_ID = CD.ID
+                 INNER JOIN dataflowdb.SYS_MODULE MK ON CD.MODULE_ID = MK.MODULE_ID
+            AND CD.DELFLAG = '0' and gx.del_flag = '0' and qxmx.del_flag = '0' AND CD.MENU_LV &lt;&gt; '1' AND
+                                                        U.ID = #{userId} AND CD.PARENTID = #{parentId}
+        ORDER BY CD.SORT
+    </select>
+</mapper>

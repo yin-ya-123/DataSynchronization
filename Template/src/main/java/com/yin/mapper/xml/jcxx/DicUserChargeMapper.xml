@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.yin.mapper.jcxx.DicUserChargeMapper">
+    <select id="getDicUserChargeAsRole" resultType="com.yin.pojo.jcxx.DicUserChargePojo"
+            parameterType="java.lang.String">
+        SELECT gl.*,
+               role.jssm,
+               mk.moudle_mc moduleMc
+        FROM dataflowdb.DIC_USER_CHARGE gl
+                 inner JOIN dataflowdb.SYS_ROLE role on gl.role_id = role.id
+                 inner join dataflowdb.SYS_MODULE mk on role.module_id = mk.module_id
+        where gl.DEL_FLAG = '0'
+          and gl.user_id = #{userId}
+    </select>
+</mapper>

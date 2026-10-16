@@ -1,0 +1,1 @@
+import{_ as t,e as n,f as e,o as r}from"./index-CLLPZFk1.js";const s={name:"NotFound"};function u(a,o,d,l,c,p){return r(),n("div",null,o[0]||(o[0]=[e("h1",null,"404 Not Found",-1),e("p",null,"Sorry, the page you requested could not be found.",-1)]))}const _=t(s,[["render",u]]);export{_ as default};

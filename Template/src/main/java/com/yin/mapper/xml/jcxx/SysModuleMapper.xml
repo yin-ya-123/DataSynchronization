@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.yin.mapper.jcxx.SysModuleMapper">
+    <select id="getModuleByUserId" resultType="com.yin.pojo.jcxx.SysModulePojo" parameterType="string">
+        SELECT DISTINCT MK.MODULE_ID,
+                        MK.MOUDLE_MC,
+                        MK.MOUDLE_PATH,
+                        MK.MOUDLE_SORT,
+                        MK.MOUDLE_IMAGE_TYPE,
+                        MK.DEL_FLAG,
+                        MK.CREATE_TIME,
+                        MK.CREATE_USER,
+                        MK.UPDATE_TIME,
+                        MK.UPDATE_USER
+        FROM dataflowdb.DIC_USER U
+                 INNER JOIN dataflowdb.DIC_USER_CHARGE GX ON U.ID = GX.USER_ID
+                 INNER JOIN dataflowdb.sys_role_detail QXMX ON GX.ROLE_ID = QXMX.ROLE_ID
+                 INNER JOIN dataflowdb.MENU CD ON QXMX.MENU_ID = CD.ID
+                 INNER JOIN dataflowdb.SYS_MODULE MK ON CD.MODULE_ID = MK.MODULE_ID
+            AND CD.DELFLAG = '0' AND CD.MENU_LV = '1' AND U.ID = #{userId}
+        ORDER BY MK.MOUDLE_SORT
+    </select>
+</mapper>

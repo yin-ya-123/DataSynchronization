@@ -1,0 +1,59 @@
+# ============== Java / Maven ==============
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+hs_err_pid*
+replay_pid*
+.mvn/
+mvnw
+mvnw.cmd
+.flattened-pom.xml
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+.factorypath
+.apt_generated/
+.springBeans
+
+# ============== Vue / Node ==============
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 编辑器
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ============== 通用 ==============
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp
+*.swp
+.env
+.env.local
+.env.*.local
+uploads/
+logs/
