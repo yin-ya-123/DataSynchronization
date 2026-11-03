@@ -18,7 +18,12 @@ public class ThreadPoolConfig {
         executor.setQueueCapacity(100); // 队列容量
         executor.setKeepAliveSeconds(60); // 空闲线程存活时间
         executor.setThreadNamePrefix("myThreadTask-"); // 线程名前缀
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy()); // 拒绝策略
+        // 拒绝策略：CallerRunsPolicy 会让"提交方线程"（Tomcat 请求线程 / cron 调度线程）去执行这个慢任务，
+        // 导致整个服务假死。改为 AbortPolicy：超出容量直接拒绝，由调用方捕获记录，任务快速失败。
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        // 优雅停机：等待在跑的任务结束
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(60);
         executor.initialize(); // 初始化
         return executor;
     }

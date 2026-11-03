@@ -31,6 +31,9 @@ public class MethodService {
     @Value("${retry.max-attempts:3}")
     private int maxRetryAttempts;
 
+    @Value("${retry.initial-interval:1000}")
+    private int initialInterval;
+
     /**
      * 公共重试方法
      *
@@ -53,14 +56,15 @@ public class MethodService {
                 log.warn("执行失败，第 {} 次尝试，错误信息: {}", attempt, e.getMessage());
                 if (attempt < maxRetryAttempts) {
                     try {
-                        Thread.sleep(1000); // 重试前等待1秒
+                        // 重试延迟：避免立即重试，给数据库恢复时间
+                        Thread.sleep(initialInterval);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         throw new RuntimeException("重试被中断", ie);
                     }
                 }
             } finally {
-                DynamicDataSourceContextHolder.clear();
+                DynamicDataSourceContextHolder.poll();
             }
         }
         log.error("执行失败，已达到最大重试次数: {}", maxRetryAttempts);

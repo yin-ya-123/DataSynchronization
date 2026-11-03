@@ -114,7 +114,14 @@ public class TaskSchedulerConfig implements SchedulingConfigurer {
     public void process(Scheduled scheduled) {
         if (scheduled.getStatus().equals("0")) {
             log.info("线程:{}开始执行定时任务: {}", Thread.currentThread().getName(), scheduled.getCronName());
-            dataMappingService.executeDataMappingTask(scheduled.getCronId(),"1");
+            try {
+                dataMappingService.executeDataMappingTask(scheduled.getCronId(), "1");
+            } catch (Exception e) {
+                // 线程池改为 AbortPolicy 后，线程池满时这里会抛 TaskRejectedException，
+                // 捕获后记录日志，保证调度线程不被影响、下个 cron 仍能正常触发
+                log.warn("定时任务提交失败（线程池已满）: {}, 原因: {}",
+                        scheduled.getCronName(), e.getMessage());
+            }
         }
     }
 }

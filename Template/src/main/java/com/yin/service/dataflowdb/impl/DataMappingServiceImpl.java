@@ -48,6 +48,34 @@ public class DataMappingServiceImpl implements DataMappingService {
     private SysDatasourceServiceImpl sysDatasourceService;
 
     /**
+     * 数据源熔断器（阶段3 新增 DataSourceCircuitBreaker 后放开）
+     */
+    // @Autowired
+    // private com.yin.utils.dataBase.DataSourceCircuitBreaker circuitBreaker;
+    /**
+     * 失败明细本地日志记录器（阶段4 新增 SyncFailureLogger 后放开）
+     */
+    // @Autowired
+    // private com.yin.utils.dataBase.SyncFailureLogger syncFailureLogger;
+
+    /**
+     * 单批写入行数
+     */
+    private static final int INSERT_CHUNK_SIZE = 100;
+    /**
+     * 单条任务明细连续失败多少个批次后中断本明细
+     */
+    private static final int MAX_FAIL_CHUNK = 3;
+    /**
+     * 数据源探活超时（秒）
+     */
+    private static final int PING_TIMEOUT_SECONDS = 3;
+    /**
+     * 防止同一任务被 cron 重复触发（慢查询时上一轮可能尚未结束）
+     */
+    private final java.util.Set<String> runningTasks = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
      * 根据任务ID查询任务明细
      *
      * @param scheduledId 任务ID
@@ -323,6 +351,12 @@ public class DataMappingServiceImpl implements DataMappingService {
             log.error("任务ID不能为空");
             return false;
         }
+        // 防重入：慢查询场景下 cron 可能在上轮未结束时再次触发，
+        // 导致同一张目标表被并发写入（死锁 / 重复插入）
+        if (!runningTasks.add(scheduledId)) {
+            log.warn("任务正在运行中，跳过本次触发, scheduledId={}", scheduledId);
+            return false;
+        }
         try {
             //1. 查询任务对象
             List<Scheduled> scheduledByTaskId = getScheduledByTaskId(scheduledId);
@@ -338,7 +372,7 @@ public class DataMappingServiceImpl implements DataMappingService {
                 return false;
             }
             //2. 查询任务的占位符参数,par[0].toString() 是否默认
-            List<SqlParams> sqlParamsByTaskId = getSqlParamsByScheduledId(scheduledId,par[0].toString());
+            List<SqlParams> sqlParamsByTaskId = getSqlParamsByScheduledId(scheduledId, par[0].toString());
             Scheduled scheduled = scheduledByTaskId.get(0);
             if (null != scheduled.getCronType() && scheduled.getCronType().equals("定时任务")) {
                 return executeDataRw(detailsList);
@@ -349,6 +383,8 @@ public class DataMappingServiceImpl implements DataMappingService {
             log.error("执行数据映射流程失败: {}", e.getMessage(), e);
             errorLogService.errorLogSave(e);
             throw new BizException("00001", e.getMessage()); // 抛出异常以触发事务回滚
+        } finally {
+            runningTasks.remove(scheduledId);
         }
     }
 
@@ -396,39 +432,46 @@ public class DataMappingServiceImpl implements DataMappingService {
 
         // 2. 遍历每个任务明细进行处理
         for (ScheduledDetails details : detailsList) {
-            // 3. 查询字段映射关系
-            List<FieldMappingPojo> fieldMappings = getFieldMappingByScheduledDetails(details);
-            if (CollectionUtils.isEmpty(fieldMappings)) {
-                log.warn("未找到字段映射关系，跳过任务明细: {}", details.getId());
-                continue;
-            }
-            log.info("查询字段映射成功");
+            // 明细级隔离 —— 一条明细失败不影响其它明细，也不再向上冒泡终止整个任务
+            try {
+                // 3. 查询字段映射关系
+                List<FieldMappingPojo> fieldMappings = getFieldMappingByScheduledDetails(details);
+                if (CollectionUtils.isEmpty(fieldMappings)) {
+                    log.warn("未找到字段映射关系，跳过任务明细: {}", details.getId());
+                    continue;
+                }
+                log.info("查询字段映射成功");
 
-            // 4. 查询源数据,根据明细任务进行数据查询
-            List<Map<String, Object>> sourceData = querySourceData(details, sqlParamsByTaskId);
-            if (CollectionUtils.isEmpty(sourceData)) {
-                log.warn("未查询到源数据，跳过任务明细: {}", details.getId());
-                continue;
-            }
-            log.info("查询源数据成功");
-            // 5. 转换数据，
-            List<Map<String, Object>> targetData = transformData(sourceData, fieldMappings);
-            if (CollectionUtils.isEmpty(targetData)) {
-                log.warn("数据转换结果为空，跳过任务明细: {}", details.getId());
-                continue;
-            }
-            log.info("数据转换成功{}", JSONUtil.toJsonStr(targetData.get(0)));
-            LambdaQueryWrapper<SysDatasource> sysDatasourceLambdaQueryWrapper = new LambdaQueryWrapper<>();
-            sysDatasourceLambdaQueryWrapper.eq(SysDatasource::getDsKey, details.getToKs());
-            SysDatasource sysDatasource = sysDatasourceService.getOne(sysDatasourceLambdaQueryWrapper);
-            // 6. 插入目标数据
-            boolean insertResult = insertTargetData(targetData, details, sysDatasource, fieldMappings);
-            if (!insertResult) {
-                log.error("插入目标数据失败，任务明细: {}", details.getId());
+                // 4. 查询源数据,根据明细任务进行数据查询
+                List<Map<String, Object>> sourceData = querySourceData(details, sqlParamsByTaskId);
+                if (CollectionUtils.isEmpty(sourceData)) {
+                    log.warn("未查询到源数据，跳过任务明细: {}", details.getId());
+                    continue;
+                }
+                log.info("查询源数据成功");
+                // 5. 转换数据，
+                List<Map<String, Object>> targetData = transformData(sourceData, fieldMappings);
+                if (CollectionUtils.isEmpty(targetData)) {
+                    log.warn("数据转换结果为空，跳过任务明细: {}", details.getId());
+                    continue;
+                }
+                log.info("数据转换成功{}", JSONUtil.toJsonStr(targetData.get(0)));
+                LambdaQueryWrapper<SysDatasource> sysDatasourceLambdaQueryWrapper = new LambdaQueryWrapper<>();
+                sysDatasourceLambdaQueryWrapper.eq(SysDatasource::getDsKey, details.getToKs());
+                SysDatasource sysDatasource = sysDatasourceService.getOne(sysDatasourceLambdaQueryWrapper);
+                // 6. 插入目标数据
+                boolean insertResult = insertTargetData(targetData, details, sysDatasource, fieldMappings);
+                if (!insertResult) {
+                    log.error("插入目标数据失败，任务明细: {}", details.getId());
+                    allSuccess = false;
+                } else {
+                    log.info("同步数据任务执行成功");
+                }
+            } catch (Exception e) {
+                // 单条明细的任何异常都不再向上冒泡，继续处理下一条明细
                 allSuccess = false;
+                log.error("任务明细 {} 执行失败，继续处理下一条明细", details.getId(), e);
             }
-            log.info("同步数据任务执行成功");
-
         }
         return allSuccess;
     }
@@ -439,7 +482,12 @@ public class DataMappingServiceImpl implements DataMappingService {
      */
     @Async("customThreadPool")
     public void executeDataMappingTask(String scheduledId, Object... par) {
-        executeDataMapping(scheduledId, par);
+        // @Async 方法内异常逃逸会杀死线程池 worker 并静默丢弃任务
+        try {
+            executeDataMapping(scheduledId, par);
+        } catch (Throwable t) {
+            log.error("数据同步任务执行异常, scheduledId={}", scheduledId, t);
+        }
     }
 
 

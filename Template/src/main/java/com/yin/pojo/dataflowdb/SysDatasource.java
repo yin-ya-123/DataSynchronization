@@ -19,6 +19,9 @@ public class SysDatasource {
     private Integer isDefault;
     private Integer status;
     private String dsLx;
+    private String ip;
+    private String schemaName;
+    private String connectionParams;
     @TableLogic(delval = "1", value = "0")
     private String delFlag;
 

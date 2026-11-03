@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.yin.mapper.dataflowdb.SysDatasourceMapper;
 import com.yin.pojo.dataflowdb.SysDatasource;
 import com.yin.service.dataflowdb.SysDatasourceService;
+import com.yin.utils.dataBase.DataSourceUrlBuilder;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import lombok.extern.slf4j.Slf4j;
@@ -63,15 +64,19 @@ public class SysDatasourceServiceImpl extends ServiceImpl<SysDatasourceMapper, S
     public HikariDataSource createHikariDataSource(SysDatasource datasource) {
         try {
             HikariConfig config = new HikariConfig();
-            config.setJdbcUrl(datasource.getUrl());
+config.setJdbcUrl(DataSourceUrlBuilder.build(datasource));
             config.setUsername(datasource.getUsername());
             config.setPassword(datasource.getPassword());
             config.setDriverClassName(datasource.getDriverClass());
-            // 可以添加其他HikariCP配置
-            config.setMaximumPoolSize(10);
-            config.setMinimumIdle(5);
-            config.setIdleTimeout(300000);
-            config.setConnectionTimeout(5000);
+            // 与 addOrUpdateDatasource 保持一致，避免"测试连接通过但正式任务失败"
+            config.setPoolName(datasource.getDsKey());
+            config.setMaximumPoolSize(50);
+            config.setMinimumIdle(3);
+            config.setConnectionTimeout(15000);
+            config.setIdleTimeout(600000);
+            config.setMaxLifetime(900000);
+            config.setValidationTimeout(5000);
+            config.setLeakDetectionThreshold(600000);
 
             return new HikariDataSource(config);
         } catch (Exception e) {
@@ -128,7 +133,8 @@ public class SysDatasourceServiceImpl extends ServiceImpl<SysDatasourceMapper, S
         try {
             // 1. 创建带完整连接池配置的 HikariDataSource
             HikariConfig config = new HikariConfig();
-            config.setJdbcUrl(datasource.getUrl());
+            // 把 connection_params 里的附加参数按库类型拼接到 url 后面
+            config.setJdbcUrl(DataSourceUrlBuilder.build(datasource));
             config.setUsername(datasource.getUsername());
             config.setPassword(datasource.getPassword());
             config.setDriverClassName(datasource.getDriverClass());
@@ -137,11 +143,11 @@ public class SysDatasourceServiceImpl extends ServiceImpl<SysDatasourceMapper, S
             // 连接池核心参数
             config.setMaximumPoolSize(50);               // 根据数据库承受能力调整
             config.setMinimumIdle(3);
-            config.setConnectionTimeout(60000);          // 获取连接超时 30 秒
+            config.setConnectionTimeout(15000);          // 获取连接超时 15 秒（取连接失败要快速暴露）
             config.setIdleTimeout(600000);               // 空闲 10 分钟回收
             config.setMaxLifetime(900000);               // 连接最长存活 15 分钟
             config.setValidationTimeout(5000);
-            config.setLeakDetectionThreshold(30000);     // 20 秒未归还打印泄漏堆栈
+            config.setLeakDetectionThreshold(600000);     // 泄漏检测 10 分钟（源查询耗时1~5分钟，30s会误报）
 
             // 2. 先创建临时实例验证连接
             HikariDataSource tempDs = new HikariDataSource(config);

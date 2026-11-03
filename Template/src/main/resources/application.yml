@@ -23,10 +23,10 @@ spring:
             # 超时相关设置
             idle-timeout: 600000           # 10分钟（空闲多久回收）
             max-lifetime: 900000           # 15分钟（连接最长存活时间，要比 DB/防火墙超时小）
-            connection-timeout: 60000      # 获取连接最大等待时间（30秒）
+            connection-timeout: 15000      # 从池里借连接的最长等待时间（15秒），与 SQL 执行耗时无关
             validation-timeout: 5000       # 校验连接的超时时间（5秒）
             maximum-pool-size: 50         # 最大连接数，根据业务并发量调整
-            leak-detection-threshold: 30000   # ← 顺便加上泄漏检测
+            leak-detection-threshold: 600000   # ← 顺便加上泄漏检测
 mybatis-plus:
   mapper-locations: classpath:com/yin/mapper/xml/*/*.xml
 #  configuration:
@@ -34,4 +34,12 @@ mybatis-plus:
 # 数据库操作重试配置
 retry:
   max-attempts: 3  # 最大重试次数
+  initial-interval: 1000  # 1秒
+
+# 数据同步失败明细处理
+sync:
+  failure:
+    # 是否同时写 error_log 表（默认关闭，失败明细统一写 logs/data-sync-error.log）
+    # 目标数据库不可用时写失败明细会再次失败，保持 false 可避免"为了记日志又报错"
+    write-db-error-log: false
 
