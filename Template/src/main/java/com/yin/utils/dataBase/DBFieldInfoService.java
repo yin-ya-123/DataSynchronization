@@ -57,13 +57,15 @@ public class DBFieldInfoService {
      * @param jdbcTemplate 数据库连接对象
      * @param dbType       数据库类型
      * @param tableName    表名
+     * @param schemaName   数据源配置的 schema 名（表名自带 schema 时优先用表名上的）
      * @return
      * @throws SQLException
      */
-    public List<Map<String, Object>> getTargetTableFieldInfo(JdbcTemplate jdbcTemplate, DbType dbType, String tableName) throws SQLException {
+    public List<Map<String, Object>> getTargetTableFieldInfo(JdbcTemplate jdbcTemplate, DbType dbType,
+                                                              String tableName, String schemaName) throws SQLException {
         List<Map<String, Object>> fieldInfoList = new ArrayList<>();
 
-        String sql = getTableColumnsQuery(dbType, tableName);
+        String sql = getTableColumnsQuery(dbType, tableName, schemaName);
 //        log.info("查询语句:{}",sql);
         try (Connection conn = Objects.requireNonNull(jdbcTemplate.getDataSource()).getConnection();
              PreparedStatement ps = conn.prepareStatement(sql);
@@ -85,27 +87,40 @@ public class DBFieldInfoService {
     /**
      * 不同数据库的取字段 SQL
      *
-     * @param dbType
-     * @param tableName
-     * @return
+     * @param dbType      数据库类型
+     * @param tableName   表名（可带 schema 前缀）
+     * @param dsSchema    数据源配置的 schema_name（表名自带 schema 时优先用表名上的）
      */
-    private String getTableColumnsQuery(DbType dbType, String tableName) {
-        String schemaName = null;
+    private String getTableColumnsQuery(DbType dbType, String tableName, String dsSchema) {
+        String schemaFromTable = null;
         String pureTableName = tableName;
 
         // 判断表名是否包含模式名（schema）
-        if (tableName.contains(".")) {
+        if (tableName != null && tableName.contains(".")) {
             String[] parts = tableName.split("\\.", 2);
-            schemaName = parts[0];
+            schemaFromTable = parts[0];
             pureTableName = parts[1];
         }
+        // 表名自带 schema 优先，否则用数据源配置的 schema_name
+        String schema = (schemaFromTable != null && !schemaFromTable.trim().isEmpty())
+                ? schemaFromTable.trim()
+                : (dsSchema == null ? null : dsSchema.trim());
+        boolean hasSchema = schema != null && !schema.isEmpty();
+
         switch (dbType) {
             case MYSQL:
             case SQLSERVER:
+                // MySQL 的 TABLE_SCHEMA 即 database 名；SQL Server 的 TABLE_SCHEMA 即 dbo 等
                 return "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH AS DATA_LENGTH " +
-                        "FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '" + pureTableName + "'";
+                        "FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '" + pureTableName + "'" +
+                        (hasSchema ? " AND TABLE_SCHEMA = '" + schema + "'" : "");
             case ORACLE:
-
+                // 指定 schema 时查 ALL_TAB_COLUMNS（可跨 schema 读取），否则保持 USER_TAB_COLUMNS
+                if (hasSchema) {
+                    return "SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH FROM ALL_TAB_COLUMNS " +
+                            "WHERE OWNER = '" + schema.toUpperCase() + "' " +
+                            "AND TABLE_NAME = '" + pureTableName.toUpperCase() + "'";
+                }
                 return "SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH FROM USER_TAB_COLUMNS " +
                         "WHERE TABLE_NAME = '" + pureTableName.toUpperCase() + "'";
             default:

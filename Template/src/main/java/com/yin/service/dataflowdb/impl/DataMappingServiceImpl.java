@@ -228,7 +228,6 @@ public class DataMappingServiceImpl implements DataMappingService {
 
     /**
      * 将转换后的数据插入目标表
-     *
      * 调整点：
      * 1. 逐行 INSERT -> 分块批量 INSERT（chunk = INSERT_CHUNK_SIZE 行）
      * 2. 统一列顺序（不能依赖 HashMap 的 entrySet 迭代顺序）
@@ -251,7 +250,8 @@ public class DataMappingServiceImpl implements DataMappingService {
             log.error("目标数据、任务明细、目标表名或目标数据库标识不能为空");
             return false;
         }
-        String targetTable = scheduledDetails.getToSql();
+        // 表名未带 schema 前缀时，用数据源配置的 schema_name 补全
+        String targetTable = resolveTargetTable(scheduledDetails.getToSql(), sysDatasource);
         String targetDs = scheduledDetails.getToKs();
 
         // 1) 熔断判断：目标库不可用时直接跳过，不做任何写入
@@ -315,6 +315,27 @@ public class DataMappingServiceImpl implements DataMappingService {
             }
         }
         return allSuccess;
+    }
+
+    /**
+     * 解析目标表名：未带 schema 前缀时，用数据源配置的 schema_name 补全。
+     *
+     * @param toSql          任务明细里配置的目标表名（可能已带 schema）
+     * @param sysDatasource  目标数据源配置
+     * @return 最终表名
+     */
+    private String resolveTargetTable(String toSql, SysDatasource sysDatasource) {
+        if (!StringUtils.hasText(toSql)) {
+            return toSql;
+        }
+        if (toSql.contains(".")) {
+            // 已带 schema，直接使用
+            return toSql;
+        }
+        if (sysDatasource != null && StringUtils.hasText(sysDatasource.getSchemaName())) {
+            return sysDatasource.getSchemaName().trim() + "." + toSql;
+        }
+        return toSql;
     }
 
     /** 列的日期处理策略 */

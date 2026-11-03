@@ -164,9 +164,9 @@ public class FieldMappingServiceImpl extends ServiceImpl<FieldMappingMapper, Fie
             newSql = SqlPlaceholderUtil.replacePlaceholdersWithSqlParams(scheduledDetails.getZsjSql(), list);
         }
         //获取主数据字段信息
-        List<Map<String, Object>> sourceFields = methodService.getFieldInfo(one.getDsKey(), newSql, one.getDsLx(), 1);
+        List<Map<String, Object>> sourceFields = methodService.getFieldInfo(one, newSql, 1);
         //获取目标数据字段信息
-        List<Map<String, Object>> targetFields = methodService.getFieldInfo(two.getDsKey(), scheduledDetailsServiceById.getToSql(), two.getDsLx(), 2);
+        List<Map<String, Object>> targetFields = methodService.getFieldInfo(two, scheduledDetailsServiceById.getToSql(), 2);
         // 先作废原先的字段映射关系
         LambdaQueryWrapper<FieldMappingPojo> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(FieldMappingPojo::getScheduledId, scheduledDetailsServiceById.getScheduledId());
@@ -185,6 +185,7 @@ public class FieldMappingServiceImpl extends ServiceImpl<FieldMappingMapper, Fie
                 String targetOldFieldType = targetField.get("type").toString();
                 if (sourceFieldName.equals(targetFieldName)) {
                     fieldMappingPojo = getFieldMappingPojo(scheduledDetailsServiceById, sourceOldFieldName, targetOldFieldName, sourceOldFieldType, targetOldFieldType);
+                    log.info("映射成功!源:{},目标:{}",sourceField,targetFieldName);
                     break;
                 }
             }

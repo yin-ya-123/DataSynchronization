@@ -102,13 +102,19 @@ public class MethodService {
             List<Map<String, Object>> maps = jdbcTemplate.queryForList(sql, arg);
             return maps;
         } catch (Exception e) {
-            //写入日志
-            errorLogService.errorLogSave(e);
+            // 写错误日志必须降级为 best-effort，不能因日志写入失败掩盖原始异常
+            try {
+                errorLogService.errorLogSave(e);
+            } catch (Exception ignore) {
+                log.error("写入 error_log 失败: {}", ignore.getMessage());
+            }
             throw new RuntimeException(e);
         } finally {
-            DynamicDataSourceContextHolder.clear();
-            // 恢复默认超时时间（可选，避免影响其他查询）
-            jdbcTemplate.setQueryTimeout(0);
+            // P8：poll() 而非 clear()
+            DynamicDataSourceContextHolder.poll();
+            // P9：删除 jdbcTemplate.setQueryTimeout(0)
+            //     —— 共享 JdbcTemplate 是单例，多线程调用会互相覆盖超时设置；
+            //        查询超时改由各库 URL 的连接属性统一控制（见 §5.1 / §6）
         }
     }
 
@@ -141,16 +147,54 @@ public class MethodService {
                 }
                 //获取字段信息
                 fileInfo = dbFieldInfoService.getTargetTableFieldInfo(jdbcTemplate,
-                        dbType, sql);
+                        dbType, sql, null);
             }
             log.info("获取完毕");
             return fileInfo;
         } catch (SQLException e) {
             throw new RuntimeException(e);
         } finally {
-            DynamicDataSourceContextHolder.clear();
+            DynamicDataSourceContextHolder.poll();
         }
 
+    }
+
+    /**
+     * 获取字段信息（带 schema 支持）。
+     *
+     * 相比原方法多传入了 SysDatasource，以便使用 schemaName 精确定位目标表。
+     */
+    public List<Map<String, Object>> getFieldInfo(SysDatasource ds, String sql, int flag) {
+        if (ds == null) {
+            log.error("数据源不能为空");
+            return new ArrayList<>();
+        }
+        log.info("数据源: {}, ip: {}, schema: {}", ds.getDsKey(), ds.getIp(), ds.getSchemaName());
+        DynamicDataSourceContextHolder.push(ds.getDsKey());
+        try {
+            List<Map<String, Object>> fileInfo = new ArrayList<>();
+            if (flag == 1) {
+                fileInfo = dbFieldInfoService.getSourceFieldInfo(jdbcTemplate, sql);
+            } else if (flag == 2) {
+                DBFieldInfoService.DbType dbType = null;
+                String dsLx = ds.getDsLx();
+                if (dsLx.equalsIgnoreCase("MYSQL")) {
+                    dbType = DBFieldInfoService.DbType.MYSQL;
+                } else if (dsLx.equalsIgnoreCase("ORACLE")) {
+                    dbType = DBFieldInfoService.DbType.ORACLE;
+                } else if (dsLx.equalsIgnoreCase("SQLSERVER")) {
+                    dbType = DBFieldInfoService.DbType.SQLSERVER;
+                }
+                fileInfo = dbFieldInfoService.getTargetTableFieldInfo(jdbcTemplate, dbType, sql,
+                        ds.getSchemaName());
+            }
+            log.info("获取完毕");
+            return fileInfo;
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
     }
 
     /**
