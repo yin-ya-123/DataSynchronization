@@ -1,6 +1,7 @@
 package com.yin.utils.dataBase;
 
 import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
+import com.yin.pojo.dataflowdb.SysDatasource;
 import com.yin.service.dataflowdb.impl.ErrorLogServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +28,9 @@ public class MethodService {
     private DBFieldInfoService dbFieldInfoService;
     @Autowired
     private ErrorLogServiceImpl errorLogService;
+    /** 探活等需要直接取连接的场景使用（路由数据源） */
+    @Autowired
+    private javax.sql.DataSource dataSource;
 
     @Value("${retry.max-attempts:3}")
     private int maxRetryAttempts;
@@ -178,5 +182,47 @@ public class MethodService {
             log.info("批量插入执行结果: {}", Arrays.stream(results).sum());
             return results;
         });
+    }
+
+    /**
+     * 数据源探活：借一次连接执行一条最简查询。
+     *
+     * ⚠️ 探活 SQL **必须按库类型区分**（已在 Oracle 11g / SQL Server 2022 / MySQL 8.0 上实测）：
+     *   - ORACLE    : 必须 "SELECT 1 FROM DUAL"
+     *                  裸 "SELECT 1" 在 Oracle 11g 上报 ORA-00923: 未找到要求的 FROM 关键字
+     *   - SQLSERVER : 必须 "SELECT 1"
+     *                  带 "FROM DUAL" 报 "'DUAL' 不是有效的表名"
+     *   - MYSQL     : 两种都支持，统一用 "SELECT 1"
+     *
+     * 用于任务开始前的快速可用性判断，避免不可用时逐行撞连接超时。
+     * 依赖各库 URL 的连接超时属性兜底（见 §5.1 / §6）。
+     *
+     * @param ds             数据源配置（含 ip，便于日志定位到具体机器）
+     * @param timeoutSeconds 语句超时秒数
+     * @return true 表示可用
+     */
+    public boolean ping(SysDatasource ds, int timeoutSeconds) {
+        if (ds == null) {
+            return false;
+        }
+        // 探活 SQL 按库类型分支，不能用"通用"写法
+        String probeSql = "ORACLE".equalsIgnoreCase(ds.getDsLx())
+                ? "SELECT 1 FROM DUAL"
+                : "SELECT 1";
+        DynamicDataSourceContextHolder.push(ds.getDsKey());
+        try (java.sql.Connection conn = dataSource.getConnection();
+             java.sql.PreparedStatement ps = conn.prepareStatement(probeSql)) {
+            ps.setQueryTimeout(timeoutSeconds);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (Exception e) {
+            // 带上 ip，排查第三方库多实例时能直接定位到"哪台机器不通"
+            log.warn("数据源探活失败: dsKey={}, ip={}, schema={}, 原因: {}",
+                    ds.getDsKey(), ds.getIp(), ds.getSchemaName(), e.getMessage());
+            return false;
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
     }
 }

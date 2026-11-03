@@ -180,5 +180,23 @@ config.setJdbcUrl(DataSourceUrlBuilder.build(datasource));
         dynamicRoutingDataSource.removeDataSource(dsKey);
     }
 
+    /**
+     * 重建指定数据源的连接池（用于连接池僵死时的自愈）。
+     * 复用已有的 removeDataSource + addDataSource 能力。
+     */
+    public void rebuildDataSource(String dsKey) {
+        SysDatasource ds = sysDatasourceMapper.selectOne(
+                new LambdaQueryWrapper<SysDatasource>().eq(SysDatasource::getDsKey, dsKey));
+        if (ds == null) {
+            log.warn("重建数据源失败: 未找到配置 dsKey={}", dsKey);
+            return;
+        }
+        DynamicRoutingDataSource routing = (DynamicRoutingDataSource) dataSource;
+        routing.removeDataSource(dsKey);
+        log.info("已移除数据源 {}, 开始重建", dsKey);
+        addOrUpdateDatasource(ds);
+        log.info("数据源 {} 重建完成", dsKey);
+    }
+
 
 }

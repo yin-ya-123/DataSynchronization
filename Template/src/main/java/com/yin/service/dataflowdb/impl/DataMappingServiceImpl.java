@@ -47,11 +47,9 @@ public class DataMappingServiceImpl implements DataMappingService {
     @Autowired
     private SysDatasourceServiceImpl sysDatasourceService;
 
-    /**
-     * 数据源熔断器（阶段3 新增 DataSourceCircuitBreaker 后放开）
-     */
-    // @Autowired
-    // private com.yin.utils.dataBase.DataSourceCircuitBreaker circuitBreaker;
+    /** 数据源熔断器 */
+    @Autowired
+    private com.yin.utils.dataBase.DataSourceCircuitBreaker circuitBreaker;
     /**
      * 失败明细本地日志记录器（阶段4 新增 SyncFailureLogger 后放开）
      */
