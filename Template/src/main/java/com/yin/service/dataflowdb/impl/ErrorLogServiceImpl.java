@@ -100,6 +100,7 @@ public class ErrorLogServiceImpl extends ServiceImpl<ErrorLogMapper, ErrorLogPoj
 
     /**
      * 异常错误日志写入
+     *
      * @param e
      * @return
      */
@@ -122,7 +123,12 @@ public class ErrorLogServiceImpl extends ServiceImpl<ErrorLogMapper, ErrorLogPoj
         errorLogPojo.setDelFlag("0");
         errorLogPojo.setErrorDescription("出错方法: " + errorMethod + "\n堆栈信息: " + errorStackTrace);
         errorLogPojo.setErrorData(e.getMessage());
-        this.save(errorLogPojo);
+        try {
+            this.save(errorLogPojo);
+        } catch (Exception ex) {
+            // P14：数据库不可用时日志写入会二次失败，不能让它掩盖原始异常
+            log.error("写入 error_log 失败: {}", ex.getMessage());
+        }
         return Result.error(e.getMessage(), null);
     }
 }

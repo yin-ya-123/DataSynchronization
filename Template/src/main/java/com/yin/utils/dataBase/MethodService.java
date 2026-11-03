@@ -46,6 +46,14 @@ public class MethodService {
      * @param <T> 返回值类型
      * @return 操作结果
      */
+    /**
+     * 公共重试方法。
+     *
+     * 调整点：
+     * 1. clear() -> poll()：只弹出栈顶，保留外层 @DS 上下文
+     * 2. 只有"连接类"异常才重试；数据类异常（SQL 语法/约束冲突）立即抛出
+     * 3. 退避改为指数：1s -> 2s -> 4s
+     */
     private <T> T executeWithRetry(String dsName, Supplier<T> supplier) {
         int attempt = 0;
         Exception lastException = null;
@@ -57,17 +65,24 @@ public class MethodService {
                 return supplier.get();
             } catch (Exception e) {
                 lastException = e;
+                // P6：数据类异常重试没有意义，直接原样抛出
+                if (!DataSourceCircuitBreaker.isConnectionError(e)) {
+                    throw new RuntimeException(e);
+                }
                 log.warn("执行失败，第 {} 次尝试，错误信息: {}", attempt, e.getMessage());
-                if (attempt < maxRetryAttempts) {
-                    try {
-                        // 重试延迟：避免立即重试，给数据库恢复时间
-                        Thread.sleep(initialInterval);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException("重试被中断", ie);
-                    }
+                if (attempt >= maxRetryAttempts) {
+                    break;
+                }
+                try {
+                    // 指数退避：1s -> 2s -> 4s，给数据库恢复时间
+                    Thread.sleep(initialInterval * (1L << (attempt - 1)));
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("重试被中断", ie);
                 }
             } finally {
+                // P8：必须用 poll() 弹出栈顶；clear() 会清空整个 ThreadLocal 栈，
+                //     导致外层 @DS("master") 上下文丢失
                 DynamicDataSourceContextHolder.poll();
             }
         }
@@ -147,11 +162,11 @@ public class MethodService {
      * @return 影响的行数
      */
     public int executeUpdate(String dsName, String sql, Object... args) {
-//        log.info("数据源: {}", dsName);
-//        log.info("执行SQL: {}", sql);
-//        for (Object arg : args) {
-//            log.info("参数: {}", arg);
-//        }
+        log.info("数据源: {}", dsName);
+        log.info("执行SQL: {}", sql);
+        for (Object arg : args) {
+            log.info("参数: {}", arg);
+        }
         /**
          * 核心功能
          * 作用: 将指定的数据源名称(dsName)压入到动态数据源的上下文中
@@ -176,12 +191,36 @@ public class MethodService {
      * @param argsList 参数列表，每个元素是一个Object数组，代表一条记录的参数
      * @return 影响的行数数组
      */
-    public int[] batchUpdate(String dsName, String sql, List<Object[]> argsList) {
-        return executeWithRetry(dsName, () -> {
+    /**
+     * 批量插入操作。
+     *
+     * 重要：批量失败时可能已部分成功，因此**不做整体重试**——
+     *       重试整块会导致已成功的行重复插入（主键冲突）。
+     *       失败信息通过 BatchUpdateException.getUpdateCounts() 交由调用方定位到行。
+     *
+     * Spring JdbcTemplate 会把 JDBC 异常包装为 DataAccessException，
+     * 这里还原为 java.sql.BatchUpdateException 抛出，便于调用方用 getUpdateCounts() 定位失败行。
+     */
+    public int[] batchUpdate(String dsName, String sql, List<Object[]> argsList) throws java.sql.BatchUpdateException {
+        DynamicDataSourceContextHolder.push(dsName);
+        try {
             int[] results = jdbcTemplate.batchUpdate(sql, argsList);
-            log.info("批量插入执行结果: {}", Arrays.stream(results).sum());
+            log.info("批量写入执行结果: 行数={}, 成功={}",
+                    results.length, Arrays.stream(results).filter(c -> c > 0).count());
             return results;
-        });
+        } catch (org.springframework.dao.DataAccessException e) {
+            // 从 Spring 包装异常中还原 JDBC 的 BatchUpdateException
+            Throwable t = e;
+            while (t != null) {
+                if (t instanceof java.sql.BatchUpdateException) {
+                    throw (java.sql.BatchUpdateException) t;
+                }
+                t = t.getCause();
+            }
+            throw e;
+        } finally {
+            DynamicDataSourceContextHolder.poll();
+        }
     }
 
     /**

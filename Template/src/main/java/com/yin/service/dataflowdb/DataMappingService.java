@@ -103,10 +103,11 @@ public interface DataMappingService {
      */
     default Map<String, String> convertToDataTypeMappingMap(List<FieldMappingPojo> fieldMappings) {
         return fieldMappings.stream()
+                // 过滤掉 targetField 或 dataTypeMapping 为 null 的元素
                 .filter(mapping -> mapping.getTargetField() != null && mapping.getDataTypeMapping() != null)
                 .collect(Collectors.toMap(
-                        FieldMappingPojo::getTargetField,
-                        FieldMappingPojo::getDataTypeMapping,
+                        FieldMappingPojo::getTargetField,  // key：目标字段名
+                        FieldMappingPojo::getDataTypeMapping, // value：数据类型映射
                         (existing, replacement) -> existing // 如果有重复的目标字段，保留第一个
                 ));
     }
