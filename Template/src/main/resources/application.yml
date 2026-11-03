@@ -31,4 +31,7 @@ mybatis-plus:
   mapper-locations: classpath:com/yin/mapper/xml/*/*.xml
 #  configuration:
 #    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+# 数据库操作重试配置
+retry:
+  max-attempts: 3  # 最大重试次数
 

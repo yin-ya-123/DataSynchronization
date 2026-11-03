@@ -4,6 +4,7 @@ import com.baomidou.dynamic.datasource.toolkit.DynamicDataSourceContextHolder;
 import com.yin.service.dataflowdb.impl.ErrorLogServiceImpl;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -12,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * 任务处理
@@ -25,6 +27,45 @@ public class MethodService {
     private DBFieldInfoService dbFieldInfoService;
     @Autowired
     private ErrorLogServiceImpl errorLogService;
+
+    @Value("${retry.max-attempts:3}")
+    private int maxRetryAttempts;
+
+    /**
+     * 公共重试方法
+     *
+     * @param dsName 数据源名称
+     * @param supplier 执行操作的函数式接口
+     * @param <T> 返回值类型
+     * @return 操作结果
+     */
+    private <T> T executeWithRetry(String dsName, Supplier<T> supplier) {
+        int attempt = 0;
+        Exception lastException = null;
+
+        while (attempt < maxRetryAttempts) {
+            attempt++;
+            DynamicDataSourceContextHolder.push(dsName);
+            try {
+                return supplier.get();
+            } catch (Exception e) {
+                lastException = e;
+                log.warn("执行失败，第 {} 次尝试，错误信息: {}", attempt, e.getMessage());
+                if (attempt < maxRetryAttempts) {
+                    try {
+                        Thread.sleep(1000); // 重试前等待1秒
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("重试被中断", ie);
+                    }
+                }
+            } finally {
+                DynamicDataSourceContextHolder.clear();
+            }
+        }
+        log.error("执行失败，已达到最大重试次数: {}", maxRetryAttempts);
+        throw new RuntimeException("执行失败，已达到最大重试次数: " + maxRetryAttempts, lastException);
+    }
 
     //数据同步其他数据库
     public void dataSync() {
@@ -50,6 +91,7 @@ public class MethodService {
 
     /**
      * 获取字段信息
+     *
      * @param dsName 数据源名称
      * @param sql    SQL语句
      * @param dsLx   数据源类型
@@ -111,16 +153,11 @@ public class MethodService {
          * 数据源切换: push(dsName) 方法将数据源名称设置到当前线程的上下文中
          * 自动路由: 当执行数据库操作时(如 jdbcTemplate.update()),动态数据源组件会从上下文中获取当前数据源名称,并路由到对应的数据库
          */
-        DynamicDataSourceContextHolder.push(dsName);
-        try {
+        return executeWithRetry(dsName, () -> {
             int result = jdbcTemplate.update(sql, args);
             log.info("执行结果: {}", result);
             return result;
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        } finally {
-            DynamicDataSourceContextHolder.clear();
-        }
+        });
     }
 
     /**
@@ -132,15 +169,10 @@ public class MethodService {
      * @return 影响的行数数组
      */
     public int[] batchUpdate(String dsName, String sql, List<Object[]> argsList) {
-        DynamicDataSourceContextHolder.push(dsName);
-        try {
+        return executeWithRetry(dsName, () -> {
             int[] results = jdbcTemplate.batchUpdate(sql, argsList);
             log.info("批量插入执行结果: {}", Arrays.stream(results).sum());
             return results;
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        } finally {
-            DynamicDataSourceContextHolder.clear();
-        }
+        });
     }
 }
