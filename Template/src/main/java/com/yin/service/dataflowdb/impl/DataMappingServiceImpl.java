@@ -60,9 +60,9 @@ public class DataMappingServiceImpl implements DataMappingService {
      */
     private static final int INSERT_CHUNK_SIZE = 100;
     /**
-     * 单条任务明细连续失败多少个批次后中断本明细
+     * 单条任务明细在存在失败批次时，整体重跑的最大次数（1 表示最多重跑一次，避免无限重试）
      */
-    private static final int MAX_FAIL_CHUNK = 3;
+    private static final int MAX_RERUN_TIMES = 1;
     /**
      * 数据源探活超时（秒）
      */
@@ -232,7 +232,7 @@ public class DataMappingServiceImpl implements DataMappingService {
      * 1. 逐行 INSERT -> 分块批量 INSERT（chunk = INSERT_CHUNK_SIZE 行）
      * 2. 统一列顺序（不能依赖 HashMap 的 entrySet 迭代顺序）
      * 3. 批量失败 -> 精确定位到行，写本地失败日志
-     * 4. 连续失败 MAX_FAIL_CHUNK 个批次 -> 中断本明细，不影响其它明细
+     * 4. 批次失败 -> 该任务明细整体重跑（最多 MAX_RERUN_TIMES 次），重跑后无论成败都结束，不再循环
      * 5. 熔断打开时直接跳过
      *
      * @param targetData       转换后的数据
@@ -277,42 +277,79 @@ public class DataMappingServiceImpl implements DataMappingService {
         Map<String, DateStrategy> strategies = resolveDateStrategies(columns, targetData, sysDatasource, stringStringMap);
         // 获取生成式sql插入语句
         String sql = buildInsertSql(targetTable, columns, strategies);
-        System.out.println(sql);
         // 4) 组装参数行（按 columns 顺序取值，并按策略做日期转换）
         List<Object[]> rows = buildRows(targetData, columns, strategies);
-
-        // 5) 分块批量写入
-        boolean allSuccess = true;
-        int failChunk = 0;
-        for (int c = 0; c * INSERT_CHUNK_SIZE < rows.size(); c++) {
-            int from = c * INSERT_CHUNK_SIZE;
-            int to = Math.min(from + INSERT_CHUNK_SIZE, rows.size());
-            List<Object[]> chunk = new ArrayList<>(rows.subList(from, to));
-            try {
-                methodService.batchUpdate(targetDs, sql, chunk);
-                circuitBreaker.onSuccess(targetDs);
-                log.info("目标表 {} 批次写入成功, 批次={}, 行数={}", targetTable, c, chunk.size());
-            } catch (java.sql.BatchUpdateException e) {
-                allSuccess = false;
-                failChunk++;
-                log.error("目标表 {} 批次写入失败, 批次={}, 行数={}", targetTable, c, chunk.size(), e);
-                locateFailedRows(targetDs, targetTable, sql, chunk, from, c, scheduledDetails, e);
-                circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
-                if (failChunk >= MAX_FAIL_CHUNK) {
-                    log.error("任务明细 {} 连续 {} 个批次失败，中断本明细（其它明细继续执行）",
-                            scheduledDetails.getId(), failChunk);
-                    break;
+        // 5) 分块批量写入：任一批次失败 -> 该任务明细整体重跑（最多 MAX_RERUN_TIMES 次），重跑后无论成败都结束
+        int totalChunk = (rows.size() + INSERT_CHUNK_SIZE - 1) / INSERT_CHUNK_SIZE;
+        int successChunk;
+        int failChunk;
+        int rerunCount = 0;
+        boolean allSuccess;
+        while (true) {
+            // 每轮（首次执行或整体重跑）从第一批开始，计数全部归零
+            allSuccess = true;
+            successChunk = 0;
+            failChunk = 0;
+            for (int c = 0; c * INSERT_CHUNK_SIZE < rows.size(); c++) {
+                int from = c * INSERT_CHUNK_SIZE;
+                int to = Math.min(from + INSERT_CHUNK_SIZE, rows.size());
+                List<Object[]> chunk = new ArrayList<>(rows.subList(from, to));
+                try {
+                    methodService.batchUpdate(targetDs, sql, chunk);
+                    circuitBreaker.onSuccess(targetDs);
+                    successChunk++;
+                } catch (org.springframework.dao.DataAccessException e) {
+                    // Spring 会把 JDBC 异常包装为 DataAccessException，
+                    // 若不在此拦截，会落到最后的通用 catch，导致 locateFailedRows 空转、无法行级定位
+                    java.sql.BatchUpdateException bue = null;
+                    Throwable cause = e;
+                    while (cause != null) {
+                        if (cause instanceof java.sql.BatchUpdateException) {
+                            bue = (java.sql.BatchUpdateException) cause;
+                            break;
+                        }
+                        cause = cause.getCause();
+                    }
+                    allSuccess = false;
+                    failChunk++;
+                    if (bue != null) {
+                        log.error("目标表 {} 批次写入失败, 批次={}, 行数={}", targetTable, c, chunk.size(), bue);
+                        locateFailedRows(targetDs, targetTable, sql, chunk, from, c, scheduledDetails, bue);
+                        circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), bue);
+                    } else {
+                        log.error("目标表 {} 批次写入失败, 批次={}, 行数={}", targetTable, c, chunk.size(), e);
+                        circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
+                    }
+                } catch (java.sql.BatchUpdateException e) {
+                    allSuccess = false;
+                    failChunk++;
+                    log.error("目标表 {} 批次写入失败, 批次={}, 行数={}", targetTable, c, chunk.size(), e);
+                    locateFailedRows(targetDs, targetTable, sql, chunk, from, c, scheduledDetails, e);
+                    circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
+                } catch (Exception e) {
+                    allSuccess = false;
+                    failChunk++;
+                    log.error("目标表 {} 批次写入异常, 批次={}", targetTable, c, e);
+                    circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
                 }
-            } catch (Exception e) {
-                allSuccess = false;
-                failChunk++;
-                log.error("目标表 {} 批次写入异常, 批次={}", targetTable, c, e);
-                circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
-                if (failChunk >= MAX_FAIL_CHUNK) {
-                    log.error("任务明细 {} 连续 {} 个批次失败，中断本明细", scheduledDetails.getId(), failChunk);
-                    break;
-                }
+                // 失败不在此处返回：本批次记失败后继续跑完后续批次，由外层决定是否整体重跑
             }
+            if (allSuccess || rerunCount >= MAX_RERUN_TIMES) {
+                // 全部批次成功，或已重跑过（重跑后无论成败都不再循环）
+                break;
+            }
+            // 存在失败批次 -> 该任务明细整体重跑：回到第一批重新执行全部批次
+            rerunCount++;
+            log.warn("目标表 {} 分批写入存在失败批次，触发任务明细整体重跑: 任务明细={}, 总批次={}, 失败批次={}, 重跑次数={}",
+                    targetTable, scheduledDetails.getId(), totalChunk, failChunk, rerunCount);
+        }
+        // 6) 汇总：只在明细结束处输出一条任务级结果日志（成功 / 失败）
+        if (allSuccess) {
+            log.info("目标表 {} 分批写入任务明细成功: 任务明细={}, 总批次={}, 成功批次={}, 失败批次={}, 重跑次数={}",
+                    targetTable, scheduledDetails.getId(), totalChunk, successChunk, failChunk, rerunCount);
+        } else {
+            log.error("目标表 {} 分批写入任务明细失败: 任务明细={}, 总批次={}, 成功批次={}, 失败批次={}, 重跑次数={}",
+                    targetTable, scheduledDetails.getId(), totalChunk, successChunk, failChunk, rerunCount);
         }
         return allSuccess;
     }
