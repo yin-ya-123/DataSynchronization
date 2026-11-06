@@ -284,6 +284,8 @@ public class DataMappingServiceImpl implements DataMappingService {
         // 批次内逐行重跑统计：恢复成功行数 / 仍失败行数
         int replaySuccessRows = 0;
         int replayFailRows = 0;
+        // 连接类故障中止后未执行的行数（单独统计，不混入逐行重跑口径）
+        int abandonedRows = 0;
         for (int c = 0; c * INSERT_CHUNK_SIZE < rows.size(); c++) {
             int from = c * INSERT_CHUNK_SIZE;
             int to = Math.min(from + INSERT_CHUNK_SIZE, rows.size());
@@ -303,6 +305,19 @@ public class DataMappingServiceImpl implements DataMappingService {
                         break;
                     }
                     cause = cause.getCause();
+                }
+                // 连接类故障优先判定：Spring 的 CannotGetJdbcConnectionException 同属 DataAccessException，
+                // 若不在此拦截会落到下面的逐行重跑，导致整批 100 行逐个撞建连超时
+                if (com.yin.utils.dataBase.DataSourceCircuitBreaker.isConnectionError(e)) {
+                    allSuccess = false;
+                    int skipRows = rows.size() - from;
+                    int skipChunk = totalChunk - c;
+                    abandonedRows += skipRows;
+                    failChunk += skipChunk;
+                    log.error("目标表 {} 批次写入连接异常, 批次={}, 剩余 {} 行 / {} 批已跳过, 等待熔断恢复后由下次调度补: {}",
+                            targetTable, c, skipRows, skipChunk, e.getMessage());
+                    circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
+                    break;
                 }
                 if (bue != null) {
                     log.error("目标表 {} 批次写入失败, 批次={}, 行数={}", targetTable, c, chunk.size(), bue);
@@ -324,6 +339,18 @@ public class DataMappingServiceImpl implements DataMappingService {
                     successChunk++;
                 }
             } catch (java.sql.BatchUpdateException e) {
+                // 连接类故障（BatchUpdateException 的 cause 可能是连接异常）：跳过剩余批次，不逐行重跑
+                if (com.yin.utils.dataBase.DataSourceCircuitBreaker.isConnectionError(e)) {
+                    allSuccess = false;
+                    int skipRows = rows.size() - from;
+                    int skipChunk = totalChunk - c;
+                    abandonedRows += skipRows;
+                    failChunk += skipChunk;
+                    log.error("目标表 {} 批次写入连接异常, 批次={}, 剩余 {} 行 / {} 批已跳过, 等待熔断恢复后由下次调度补: {}",
+                            targetTable, c, skipRows, skipChunk, e.getMessage());
+                    circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
+                    break;
+                }
                 log.error("目标表 {} 批次写入失败, 批次={}, 行数={}", targetTable, c, chunk.size(), e);
                 circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
                 int[] replay = replayChunkRowByRow(targetDs, targetTable, sql, chunk, from, c,
@@ -337,23 +364,46 @@ public class DataMappingServiceImpl implements DataMappingService {
                     successChunk++;
                 }
             } catch (Exception e) {
-                // 非 SQL 执行类异常（连接中断等）：不逐行重跑，避免整批 100 次无效重试
-                allSuccess = false;
-                failChunk++;
-                log.error("目标表 {} 批次写入异常, 批次={}", targetTable, c, e);
+                // 非 SQL 执行类异常：按"是否连接类故障"二分处理
+                // 口径：只有连接类故障才允许跳过（中止剩余批次，留待下次调度补），其余错误一律继续往下走
+                if (com.yin.utils.dataBase.DataSourceCircuitBreaker.isConnectionError(e)) {
+                    allSuccess = false;
+                    // 本批剩余未执行行 + 后续未执行批次，全部计入连接中断丢弃
+                    int skipRows = rows.size() - from;
+                    int skipChunk = totalChunk - c;
+                    abandonedRows += skipRows;
+                    failChunk += skipChunk;
+                    log.error("目标表 {} 批次写入连接异常, 批次={}, 剩余 {} 行 / {} 批已跳过, 等待熔断恢复后由下次调度补: {}",
+                            targetTable, c, skipRows, skipChunk, e.getMessage());
+                    circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
+                    // 连接已不可用，剩余批次不再逐个尝试建连
+                    break;
+                }
+                // 非连接类异常：仍按批次内逐行补插，避免整批 100 行被静默丢弃
+                log.error("目标表 {} 批次写入异常, 批次={}, 行数={}, 转批次内逐行补插", targetTable, c, chunk.size(), e);
                 circuitBreaker.onFailure(targetDs, sysDatasource.getIp(), e);
+                int[] replay = replayChunkRowByRow(targetDs, targetTable, sql, chunk, from, c,
+                        scheduledDetails, null);
+                replaySuccessRows += replay[0];
+                replayFailRows += replay[1];
+                if (replay[1] > 0) {
+                    allSuccess = false;
+                    failChunk++;
+                } else {
+                    successChunk++;
+                }
             }
             // 失败批次已在批次内逐行重跑完毕，继续下一个批次，不中断、不影响其它批次
         }
         // 6) 汇总：只输出一条任务级成败日志
         if (allSuccess) {
-            log.info("目标表 {} 分批写入任务明细成功: 任务明细={}, 总批次={}, 成功批次={}, 失败批次={}, 逐行重跑成功行数={}, 仍失败行数={}",
+            log.info("目标表 {} 分批写入任务明细成功: 任务明细={}, 总批次={}, 成功批次={}, 失败批次={}, 逐行重跑成功行数={}, 仍失败行数={}, 连接中断丢弃行数={}",
                     targetTable, scheduledDetails.getId(), totalChunk, successChunk, failChunk,
-                    replaySuccessRows, replayFailRows);
+                    replaySuccessRows, replayFailRows, abandonedRows);
         } else {
-            log.error("目标表 {} 分批写入任务明细失败: 任务明细={}, 总批次={}, 成功批次={}, 失败批次={}, 逐行重跑成功行数={}, 仍失败行数={}",
+            log.error("目标表 {} 分批写入任务明细失败: 任务明细={}, 总批次={}, 成功批次={}, 失败批次={}, 逐行重跑成功行数={}, 仍失败行数={}, 连接中断丢弃行数={}",
                     targetTable, scheduledDetails.getId(), totalChunk, successChunk, failChunk,
-                    replaySuccessRows, replayFailRows);
+                    replaySuccessRows, replayFailRows, abandonedRows);
         }
         return allSuccess;
     }
