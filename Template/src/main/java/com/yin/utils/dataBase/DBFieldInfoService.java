@@ -39,7 +39,9 @@ public class DBFieldInfoService {
             int columnCount = metaData.getColumnCount();
             for (int i = 1; i <= columnCount; i++) {
                 Map<String, Object> fieldInfo = new LinkedHashMap<>();
-                fieldInfo.put("name", metaData.getColumnName(i));
+//                fieldInfo.put("name", metaData.getColumnName(i));
+                // 获取别名不过去实际列名
+                fieldInfo.put("name", metaData.getColumnLabel(i));
                 fieldInfo.put("type", metaData.getColumnTypeName(i));
                 fieldInfo.put("size", metaData.getColumnDisplaySize(i));
                 fieldInfo.put("nullable", metaData.isNullable(i) == ResultSetMetaData.columnNullable);
